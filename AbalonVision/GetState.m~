@@ -1,0 +1,412 @@
+% **************************************************** %
+% GetState Finds the state of the board given in the 
+% image. The board game is Abalon, and it is assumed that both players
+% initially start with 14 balls, with one player being red, and the other
+% yellow. The state is given as a set of balls for each player. If the ball
+% is out of the board (pushed aside), its color is given as 'Invalid'. In
+% addition to the calculation of the state, it is compared with the last
+% state to find out which 'Move' was done last. 
+%
+% Author: rusen
+% Date: 18.06.2014
+% Update: State/move calculation added on 12.07.2014.
+% **************************************************** %
+function [ state ] = GetState( imgPath )
+    debug = 1;
+    blobRadiusEdgeRatio = 0.03;
+    ballRadiusEdgeRatio = 0.08;
+    boardRows = 9;
+    boardSideOverhead = 5.05;
+    boardSideRest = 13.467 - boardSideOverhead;
+    boardStartSpotCount = 5;
+    rowOverhead = 6;
+    rowCenterGap = 2.5;
+    blobCenterDivergence = 25;
+    % 61 zeros as the dummy state.
+    rowCounts = [0 5 11 18 26 35 43 50 56 61];
+    state = '0000000000000000000000000000000000000000000000000000000000000';
+
+    % Convert image to grayscale.
+    img = imread(imgPath);
+    if size(img,3)>1
+       grayImg = rgb2gray(img(:,:,1:3));
+    end
+    
+    % Apply Otsu thresholding.
+    thrImg = im2bw(grayImg, graythresh(grayImg));
+
+    % Find lines over thresholded image.
+    imwrite(thrImg, 'lsd_input.pgm');
+    if ismac
+        cmd = './lsd_mac -a 45 -d 0.25 lsd_input.pgm lsd_output.txt';
+    elseif ismac
+        cmd = './lsd_linux -a 45 -d 0.25 lsd_input.pgm lsd_output.txt';
+    end
+    system(cmd);
+    lineOutput = load('lsd_output.txt', '-ascii');
+    
+    % Get longest 6 lines (lines on each side)
+    lineNorms = sqrt(sum((lineOutput(:,1:2) - lineOutput(:,3:4)).^2, 2));
+    [~, sortedLineIdx] = sort(lineNorms, 'descend');
+    borderLineIdx = sortedLineIdx(1:6);
+    lineOutput = lineOutput(borderLineIdx, :);
+    allCorners = [lineOutput(:,1:2); lineOutput(:,3:4)];
+    
+    if debug
+        figure, imshow(img), hold on;
+        for i = 1:size(lineOutput,1)
+              xy = [lineOutput(i,1), lineOutput(i,2); lineOutput(i,3), lineOutput(i,4)];
+              plot(xy(:,1),xy(:,2),'LineWidth',2,'Color','green');
+        end
+    end
+    
+    % From the lines, extract the 6 corners that are associated with the
+    % board.
+    matchingCorners = zeros(12,1);
+    for cornerItr = 1:12
+        [~, sortedIdx] = sort(sqrt(sum(((allCorners - repmat(allCorners(cornerItr,:), 12, 1)).^2),2)), 'ascend');
+        matchingCorners(cornerItr) = sortedIdx(2);
+    end
+    
+    % Sanity check to see if the corners are aligned correctly.
+    if numel(unique(matchingCorners)) ~= 12
+        return;
+    end
+    for cornerItr = 1:numel(matchingCorners)
+        if rem(cornerItr,6) == rem(matchingCorners(cornerItr), 6)
+           return; 
+        end
+    end
+    
+    %% Find real coordinates of all corners.
+    % First, let's find out which lines intersect.
+    matchingLines = mod([(1:12)', matchingCorners], 6);
+    matchingLines(matchingLines==0) = 6;
+    matchingLines = sort(matchingLines,2);
+    matchingLines = unique(matchingLines, 'rows');
+    
+    % Each line intersection is another corner. Find exact coordinates of
+    % all corners.
+    cornerCoords = zeros(6,2);
+    for lineItr = 1:6
+        coords = allCorners([matchingLines(lineItr, :), matchingLines(lineItr, :)+6], :);
+        coords = coords([1, 3, 2, 4],:);
+        cornerCoords(lineItr,:) = linlinintersect(coords);
+    end
+    
+    if debug
+        plot(allCorners(:,1),allCorners(:,2),'x');
+        plot(cornerCoords(:,1),cornerCoords(:,2),'*');
+    end
+    
+    % Re-order the corners. Starting with top left corner, clockwise.
+    cornerCoords = cornerCoords(:,[2,1]);
+    minVert = min(cornerCoords(:,2));
+    maxVert = max(cornerCoords(:,2));
+    minHorz = min(cornerCoords(:,1));
+    maxHorz = max(cornerCoords(:,1));
+    
+    [~, topLeft] = min(sum(((cornerCoords - repmat([minHorz, minVert], 6, 1)).^2),2));
+    [~, leftSide] = min(cornerCoords(:,2));
+    [~, rightSide] = max(cornerCoords(:,2));
+    [~, topRight] = min(sum(((cornerCoords - repmat([minHorz, maxVert], 6, 1)).^2),2));
+    [~, bottomLeft] = min(sum(((cornerCoords - repmat([maxHorz, minVert], 6, 1)).^2),2));
+    [~, bottomRight] = min(sum(((cornerCoords - repmat([maxHorz, maxVert], 6, 1)).^2),2));
+    cornerCoords = cornerCoords([topLeft, topRight, rightSide, bottomRight, bottomLeft, leftSide], :);
+    cornerCoords = round(cornerCoords);
+    
+    % Learn blob size-related parameters, based on the size of the board in the screen.
+    edgeLength = sqrt(sum((cornerCoords(1,:) - cornerCoords(2,:)).^2));
+    ballRadius = ballRadiusEdgeRatio*edgeLength;
+    blobRadius = blobRadiusEdgeRatio*edgeLength;
+    minBlobSize = round(blobRadius * blobRadius * 3.14);
+    maxBlobSize = round(ballRadius * ballRadius * 3.14);
+    % Mark the area under the hexagon marked by the corners.
+%     boardMask = zeros(size(img,1), size(img,2));
+%     ind = drawline(cornerCoords, cornerCoords([2:end, 1],:), size(boardMask));
+%     boardMask(ind) = 1;
+%     boardMask = imfill(boardMask, 'holes');
+    
+    %% Find color blobs.
+    % Find red/yellow ones.
+    yellowBlobs = img(:,:,1)>img(:,:,2) & img(:,:,1)<img(:,:,2)*2 & img(:,:,3) < 10;
+    yellowBlobs = imopen(yellowBlobs, strel('disk', 5));
+    CC=bwconncomp(yellowBlobs);
+    yellowBlobs(vertcat(CC.PixelIdxList{cellfun(@numel, CC.PixelIdxList)<minBlobSize}))=0;
+    yellowBlobs(vertcat(CC.PixelIdxList{cellfun(@numel, CC.PixelIdxList)>maxBlobSize}))=0;
+    redBlobs = img(:,:,1)>img(:,:,2)*2 & img(:,:,1)>img(:,:,2)*3;
+    redBlobs = imopen(redBlobs, strel('disk', 1));
+    CC=bwconncomp(redBlobs);
+    redBlobs(vertcat(CC.PixelIdxList{cellfun(@numel, CC.PixelIdxList)<minBlobSize}))=0;
+    redBlobs(vertcat(CC.PixelIdxList{cellfun(@numel, CC.PixelIdxList)>maxBlobSize}))=0;
+    
+    %% Get empty board spot locations in terms of pixel coordinates.
+    % First, we need to obtain the parallel lines, each parallel to the top side of the screen.
+    parallelLines = zeros(boardRows, 4);
+    halfRows = round(boardRows/2)-1;
+    startPoint1 = (cornerCoords(1,:) * boardSideRest + cornerCoords(6,:) * boardSideOverhead) / (boardSideOverhead + boardSideRest);
+    startPoint2 = (cornerCoords(2,:) * boardSideRest + cornerCoords(3,:) * boardSideOverhead) / (boardSideOverhead + boardSideRest);
+    
+    parallelLines(1:(halfRows+1), :) = [(startPoint1(1):((cornerCoords(6,1) - startPoint1(1))/halfRows):cornerCoords(6,1))', ...
+                                    (startPoint1(2):((cornerCoords(6,2) - startPoint1(2))/halfRows):cornerCoords(6,2))', ...
+                                    (startPoint2(1):((cornerCoords(3,1) - startPoint2(1))/halfRows):cornerCoords(3,1))', ...
+                                    (startPoint2(2):((cornerCoords(3,2) - startPoint2(2))/halfRows):cornerCoords(3,2))', ...
+                                    ];
+                                
+    startPoint1 = (cornerCoords(5,:) * boardSideRest + cornerCoords(6,:) * boardSideOverhead) / (boardSideOverhead + boardSideRest);
+    startPoint2 = (cornerCoords(4,:) * boardSideRest + cornerCoords(3,:) * boardSideOverhead) / (boardSideOverhead + boardSideRest);
+    
+    parallelLines(end:-1:(halfRows+1), :) = [(startPoint1(1):((cornerCoords(6,1) - startPoint1(1))/halfRows):cornerCoords(6,1))', ...
+                                    (startPoint1(2):((cornerCoords(6,2) - startPoint1(2))/halfRows):cornerCoords(6,2))', ...
+                                    (startPoint2(1):((cornerCoords(3,1) - startPoint2(1))/halfRows):cornerCoords(3,1))', ...
+                                    (startPoint2(2):((cornerCoords(3,2) - startPoint2(2))/halfRows):cornerCoords(3,2))', ...
+                                    ];
+    % Then, from these lines, we obtain the center coordinates of board
+    % spots.
+    numberOfCenters = halfRows+boardStartSpotCount;
+    centers = zeros(numberOfCenters*(numberOfCenters+1) - boardStartSpotCount*(boardStartSpotCount-1) - numberOfCenters, 2);
+    centerCounter = 1;
+    for rowItr = 1:boardRows
+        point1 = parallelLines(rowItr,1:2);
+        point2 = parallelLines(rowItr,3:4);
+        
+        if rowItr>(boardRows-halfRows)
+            numberOfSpots = boardStartSpotCount + mod(-rowItr, (halfRows+1)) - 1;
+        elseif rowItr<(boardRows-halfRows)
+            numberOfSpots = boardStartSpotCount + mod(rowItr, (halfRows+1)) - 1;
+        else
+            numberOfSpots = boardStartSpotCount + halfRows;
+        end
+        
+        overallLength = rowOverhead*2 + rowCenterGap*(numberOfSpots-1);
+        for centerItr = centerCounter:(centerCounter+numberOfSpots-1)
+            localCenterItr = centerItr-centerCounter;
+            centers(centerItr,:) = (point2*(rowOverhead + rowCenterGap*localCenterItr) + ...
+                point1*(rowOverhead + rowCenterGap*(numberOfSpots - 1 - localCenterItr))) / overallLength; 
+            
+        end
+        centerCounter = centerItr+1;
+    end
+    
+    % Show in output.
+    if debug
+        plot(centers(:,2),centers(:,1),'b*');
+    end
+                              
+    %% Evaluate each blob to update the state.
+    % Extract centers of blobs.
+    yellowCenters = regionprops(yellowBlobs, 'Centroid');
+    yellowCenters = cat(1, yellowCenters.Centroid);
+    redCenters = regionprops(redBlobs, 'Centroid');
+    redCenters = cat(1, redCenters.Centroid);
+    blobs = [[yellowCenters, ones(size(yellowCenters,1), 1)]; ...
+        [redCenters, ones(size(redCenters,1), 1)*2]];
+    
+    
+    % If no blobs exist, return.
+    if isempty(blobs)
+       return; 
+    end
+    
+    % Visualize detections.
+    if debug
+        if ~isempty(yellowCenters)
+            plot(yellowCenters(:,1),yellowCenters(:,2),'y*', 'MarkerSize', 10);
+        end
+        if ~isempty(redCenters)
+            plot(redCenters(:,1),redCenters(:,2),'r*', 'MarkerSize', 10);
+        end
+        hold off;
+    end
+    
+    % Replace x and y of blobs.
+    blobs = blobs(:,[2, 1, 3]);
+   
+    for blobItr = 1:size(blobs,1)
+        [blobDist, nearestBlob] = min(sqrt(sum((centers - repmat(blobs(blobItr,1:2), size(centers,1), 1)).^2, 2)));
+        if blobDist <= blobCenterDivergence
+            state(nearestBlob) = char(num2str(blobs(blobItr,3)));
+        end
+    end
+    
+    %% Post-processing.
+    % After the state has been detected, we process the string to extract
+    % ball positions, colors, etc.. The state is printed in state.txt:
+    %
+    % row1 col1 color1
+    % row2 col2 color2
+    % ...
+    % row24 col24 color24
+    %
+    % where each row of the file corresponds to another ball. 0<=rowX<=8,
+    % 0<=colX<=8, colorX = one of {0 (Invalid), 1 (Yellow), 2 (Red)}.
+    %
+    % In addition to that, the last move is computed by comparing previous
+    % state and current state, and printed into move.txt in this format:
+    % 
+    % direction (One of -1(Invalid), 0(No move), 1(TopLeft), 2(Top), 3(TopRight), 4(BottomRight), 5(Bottom),
+    % 6(BottomLeft)).
+    % --New--
+    % row1 col1 color1
+    % row2 col2 color2
+    % ...
+    % rowM colM colorM
+    % --Old--
+    % row1 col1 color1
+    % row2 col2 color2
+    % ...
+    % rowM colM colorM
+    
+    if exist('data.mat', 'file')
+        load('data.mat', 'prevState');
+    else
+        prevState = [];
+    end
+    
+    % Get the balls from both previous state and current state.
+    prevBalls = getBalls(prevState);
+    balls = getBalls(state);
+    
+    % Print state.
+    fid = fopen('state.txt', 'w');
+    for ballItr = 1:size(balls,1)
+        fprintf(fid, '%d %d %d\n', balls(ballItr, 1), balls(ballItr, 2), balls(ballItr, 3));
+    end
+    fclose(fid);
+    
+    % If previous ball list is not empty, we calculate the move.
+    if ~isempty(prevBalls)
+        % Get old & new balls for move.
+        oldBalls = prevBalls(~ismember(prevBalls, balls, 'rows') & prevBalls(:,3)~=0, :);
+        newBalls = balls(~ismember(balls, prevBalls, 'rows') & balls(:,3) ~= 0,:);
+        
+        % Initially set direction as 2 (TopLeft).
+        direction = 2;
+        
+        % Estimate direction.
+        if isempty(oldBalls) && isempty(newBalls)
+            direction = 0;
+        end
+        
+        %% Sanity checks to validate if the move is legit.
+        % From previous state to this state, the number of empty spots can
+        % stay the same, or decrease by one. Otherwise it's an invalid
+        % move.
+        if direction == 2 && size(oldBalls,1) > size(newBalls,1)+1
+            direction = -1;
+        end
+        
+        % Find the pushing point. In order to do that, we try to find a
+        % spot which was not empty in prevState, and is empty in state.
+        % If there are more than 1 of such points, the move is invalid.
+        pushPoint = find(prevState ~= '0' & state == '0');
+        if direction==2 
+            if numel(pushPoint)~=1
+                direction = -1;
+            else
+                row = find(pushPoint<=rowCounts, 1, 'first')-2;
+                col = (pushPoint - rowCounts(row+1))-1;
+                pushPoint = [row col];
+                
+                % Here, we have the pushing point (row, col). 
+                % We try out six different scenarios for pushing the ball 
+                % from pushPoint in previous state, and altering the board 
+                % according to the move.
+                % If none of them matches the new state, the move is
+                % invalid. If only one of them matches, it's perfect, we've
+                % found the direction. If two or more match, we find the
+                % one that alters least number of balls, and select it as
+                % the direction.
+                
+                
+                % Update oldBalls and newBalls based on the direction of
+                % the move.
+                possibleDirections = zeros(6,1);
+                movedBalls = zeros(6,1);
+                for directionItr = 1:6
+                    switch directionItr
+                        case 1
+                            ballsToMove = prevBalls(:,1) <= row & ...
+                                prevBalls(:,2) <= col & prevBalls(:,3)>0 & ...
+                                prevBalls(:,1) == prevBalls(:,2);
+                        case 2  
+                            prevBalls(:,1:2) = prevBalls(:,1:2) * -1;
+                            ballsToMove = sum(prevBalls(:,1:2),2) == (row+col) & ...
+                                prevBalls(:,1) <= row;
+                        case 3    
+                            ballsToMove = prevBalls(:,1) == row & ...
+                                prevBalls(:,2) >= col;
+                        case 4
+                            ballsToMove = prevBalls(:,1) >= row & ...
+                                prevBalls(:,2) >= col & prevBalls(:,3)>0 & ...
+                                prevBalls(:,1) == prevBalls(:,2);
+                        case 5
+                            ballsToMove = sum(prevBalls(:,1:2),2) == (row+col) & ...
+                                prevBalls(:,1) >= row;
+                        case 6
+                            ballsToMove = prevBalls(:,1) == row & ...
+                                prevBalls(:,2) <= col;
+                    end
+                end
+            end
+        end
+        
+        %% Print move.
+        fid = fopen('move.txt', 'w');
+        fprintf(fid, '%d\n', direction);
+        fprintf(fid, '--New--\n');
+        for newBallItr = 1:size(newBalls,1)
+            fprintf(fid, '%d %d %d\n', newBalls(newBallItr,1), newBalls(newBallItr,2), newBalls(newBallItr,3));
+        end
+        fprintf(fid, '--Old--\n');
+        for oldBallItr = 1:size(oldBalls,1)
+            fprintf(fid, '%d %d %d\n', oldBalls(oldBallItr,1), oldBalls(oldBallItr,2), oldBalls(oldBallItr,3));
+        end
+    end
+     prevState = state;
+     save('data.mat', 'prevState');
+end
+
+
+function [balls] = getBalls(state)
+    if isempty(state)
+        balls = [];
+        return;
+    end
+    
+    rowCounts = [0 5 11 18 26 35 43 50 56 61];
+
+    balls = -1 * ones(24,3);
+    balls(:,3) = 0;
+    ballCounter = 1;
+    
+    for spotItr = 1:numel(state)
+        if state(spotItr) ~= '0'
+            row = find(spotItr<=rowCounts, 1, 'first')-2;
+            col = (spotItr - rowCounts(row+1))-1;
+            color = str2num(state(spotItr));
+            balls(ballCounter,:) = [row, col, color];
+            ballCounter = ballCounter + 1;
+        end
+    end
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

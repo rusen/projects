@@ -1,0 +1,53 @@
+#include  <iostream>
+#include  <ply.hpp>
+
+void vertex_x_callback(ply::float32 x)
+{
+  std::cout << x;
+}
+
+void vertex_y_callback(ply::float32 y)
+{
+  std::cout << " " << y;
+}
+
+void vertex_z_callback(ply::float32 z)
+{
+  std::cout << " " << z << "\n";
+}
+
+template  <typename ScalarType>
+std::tr1::function <void (ScalarType)> scalar_property_definition_callback(const std::string& element_name, const std::string& property_name);
+
+template  <>
+std::tr1::function <void (ply::float32)> scalar_property_definition_callback(const std::string& element_name, const std::string& property_name)
+{
+  if (element_name == "vertex") {
+    if (property_name == "x") {
+      return vertex_x_callback;
+    }
+    else if (property_name == "y") {
+      return vertex_y_callback;
+    }
+    else if (property_name == "z") {
+      return vertex_z_callback;
+    }
+    else {
+      return 0;
+    }
+  }
+  else {
+    return 0;
+  }
+}
+
+int main(int argc, char* argv[])
+{
+  ply::ply_parser ply_parser;
+
+  ply::ply_parser::scalar_property_definition_callbacks_type scalar_property_definition_callbacks;
+  ply::at <ply::float32>(scalar_property_definition_callbacks) = scalar_property_definition_callback <ply::float32>;
+  ply_parser.scalar_property_definition_callbacks(scalar_property_definition_callbacks);
+
+  ply_parser.parse("bun_zipper_res3.ply");
+}

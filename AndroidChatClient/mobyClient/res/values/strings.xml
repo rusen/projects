@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="hello">Hello World, HelloAndroid!</string>
+    <string name="app_name">Moby</string>
+    <string name="company_name">Sterling Cooper Advertising</string>
+    <color name="blue">#000080</color>
+    <color name="gray">#101010</color>
+    <color name="arkafon">#696969</color>
+    <color name="metin">#ffffff</color>
+    <color name="black">#000000</color>
+    <color name="navy_blue">#990505</color>
+</resources>

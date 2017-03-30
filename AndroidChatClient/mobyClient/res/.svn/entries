@@ -1,0 +1,40 @@
+9
+
+dir
+159
+svn+ssh://e1502954@external.ceng.metu.edu.tr/home/svn/490.2010/killbill/mobySystem/res
+svn+ssh://e1502954@external.ceng.metu.edu.tr/home/svn/490.2010/killbill
+
+
+
+2010-06-15T22:48:40.145959Z
+157
+e1502061
+
+
+svn:special svn:externals svn:needs-lock
+
+
+
+
+
+
+
+
+
+
+
+9bd9f2c9-cd13-46fd-9b03-e4cfe2f38244
+
+drawable
+dir
+
+layout
+dir
+
+raw
+dir
+
+values
+dir
+
